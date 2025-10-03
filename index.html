@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Umeed Bot Auto-Join Call</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f7f9fb; }
+        .video-container {
+            position: relative;
+            background-color: #1f2937;
+            border-radius: 0.75rem;
+            overflow: hidden;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        }
+        video {
+            width: 100%;
+            min-height: 250px;
+            object-fit: cover;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="max-w-7xl mx-auto p-4 md:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-green-600">Umeed Bot Auto-Connect</h1>
+            <p class="text-gray-600 mt-2">Signaling Handled Automatically via PeerJS</p>
+        </header>
+
+        <div id="status-box" class="mb-6 p-4 bg-blue-100 border-l-4 border-blue-500 text-blue-800 rounded-lg shadow-md">
+            <p class="font-semibold">Status: <span id="peer-status">Initializing...</span></p>
+            <div id="link-section" class="mt-2 hidden">
+                <p class="font-medium text-sm">Share this link to start the meeting:</p>
+                <input type="text" id="meeting-link" readonly class="w-full mt-1 p-2 border border-gray-300 rounded-lg text-sm bg-white" />
+                <button onclick="copyLink()" class="mt-2 px-4 py-2 bg-blue-500 text-white text-sm font-semibold rounded-lg hover:bg-blue-600">Copy Link</button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <div class="video-container">
+                <video id="localVideo" autoplay muted playsinline></video>
+                <div class="absolute bottom-0 left-0 p-3 bg-black bg-opacity-30 w-full text-white font-semibold">Your Stream</div>
+            </div>
+            <div class="video-container">
+                <video id="remoteVideo" autoplay playsinline></video>
+                <div class="absolute bottom-0 left-0 p-3 bg-black bg-opacity-30 w-full text-white font-semibold">Remote Stream</div>
+            </div>
+        </div>
+
+        <div class="flex justify-center">
+            <button id="startButton" onclick="startCallFlow()" class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-8 rounded-lg transition duration-200 shadow-xl text-lg">
+                1. Start or Join Meeting
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const peerStatus = document.getElementById('peer-status');
+        const linkSection = document.getElementById('link-section');
+        const meetingLinkInput = document.getElementById('meeting-link');
+        const startButton = document.getElementById('startButton');
+
+        let peer = null;
+        let localStream = null;
+        const urlParams = new URLSearchParams(window.location.search);
+        const remotePeerId = urlParams.get('room'); // Get the room ID from the URL
+
+        /**
+         * The core function to start the camera and initialize the PeerJS connection.
+         */
+        async function startCallFlow() {
+            startButton.disabled = true;
+            peerStatus.textContent = 'Awaiting media access...';
+
+            try {
+                // 1. Get Local Stream (Camera/Mic)
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+                peerStatus.textContent = 'Media secured. Connecting to signaling server...';
+
+                // 2. Initialize PeerJS
+                if (remotePeerId) {
+                    // Scenario B: Joining a call (ID is in the URL)
+                    initializePeer(null); // Let PeerJS generate a temporary ID
+                } else {
+                    // Scenario A: Creating a new meeting (ID is not in the URL)
+                    initializePeer(generateRoomId()); // Generate a specific, memorable ID
+                }
+
+                // 3. Set up the connection listeners (done in initializePeer)
+
+            } catch (error) {
+                peerStatus.textContent = 'ERROR: ' + error.name + '. Check HTTPS, permissions, and device status.';
+                console.error('Error starting call flow:', error);
+                startButton.disabled = false;
+            }
+        }
+
+        /**
+         * Initializes the PeerJS object with a given ID.
+         * @param {string | null} id The desired Peer ID, or null to let PeerJS generate one.
+         */
+        function initializePeer(id) {
+            // Using the default PeerJS server for simplicity
+            peer = new Peer(id, {
+                host: '0.peerjs.com', 
+                port: 443, 
+                secure: true 
+            });
+
+            peer.on('open', (peerId) => {
+                peerStatus.textContent = `Connected to signaling server. Your ID: ${peerId}`;
+                
+                if (!remotePeerId) {
+                    // Scenario A: New Meeting Creator
+                    displayShareLink(peerId);
+                } else {
+                    // Scenario B: User joining a meeting
+                    connectToRemotePeer(remotePeerId, localStream);
+                }
+            });
+
+            peer.on('call', (call) => {
+                // When a remote peer calls us, answer it
+                peerStatus.textContent = `Incoming call from ${call.peer}. Answering...`;
+                call.answer(localStream);
+                setupRemoteStream(call);
+            });
+
+            peer.on('error', (err) => {
+                peerStatus.textContent = `PEER ERROR: ${err.type}`;
+                console.error('PeerJS Error:', err);
+                startButton.disabled = false;
+            });
+        }
+
+        /**
+         * Initiates the call to the remote peer ID.
+         * @param {string} targetPeerId The ID of the peer to call.
+         * @param {MediaStream} stream The local media stream.
+         */
+        function connectToRemotePeer(targetPeerId, stream) {
+            peerStatus.textContent = `Connecting to ${targetPeerId}...`;
+            const call = peer.call(targetPeerId, stream);
+            setupRemoteStream(call);
+        }
+
+        /**
+         * Sets up the listener for the remote peer's video stream.
+         * @param {Peer.MediaConnection} call The established PeerJS media connection.
+         */
+        function setupRemoteStream(call) {
+            call.on('stream', (remoteStream) => {
+                remoteVideo.srcObject = remoteStream;
+                peerStatus.textContent = `Call established with ${call.peer}.`;
+                customAlert('Call connected successfully!');
+            });
+            call.on('close', () => {
+                remoteVideo.srcObject = null;
+                peerStatus.textContent = 'Call ended.';
+            });
+        }
+
+        /**
+         * Utility to generate a simple, recognizable room ID.
+         */
+        function generateRoomId() {
+            return 'umeed-' + Math.random().toString(36).substring(2, 6);
+        }
+
+        /**
+         * Utility to display and copy the link for the caller.
+         */
+        function displayShareLink(peerId) {
+            // Generates the link: current URL + ?room=PEER_ID
+            const link = window.location.origin + window.location.pathname + `?room=${peerId}`;
+            meetingLinkInput.value = link;
+            linkSection.classList.remove('hidden');
+            peerStatus.textContent = 'Meeting created. Share the link to invite the other user.';
+        }
+
+        function copyLink() {
+            meetingLinkInput.select();
+            document.execCommand('copy');
+            customAlert('Meeting link copied to clipboard!');
+        }
+        
+        // Simple custom alert (from previous version)
+        function customAlert(message) {
+            console.error(message);
+            const alertBox = document.createElement('div');
+            alertBox.className = 'fixed top-4 right-4 p-4 rounded-lg shadow-xl text-white font-semibold z-50 transition-transform transform duration-300';
+            
+            if (message.toLowerCase().includes('error') || message.toLowerCase().includes('failed')) {
+                alertBox.classList.add('bg-red-600');
+            } else {
+                alertBox.classList.add('bg-green-600');
+            }
+
+            alertBox.textContent = message;
+            document.body.appendChild(alertBox);
+
+            setTimeout(() => {
+                alertBox.classList.add('translate-x-full');
+                alertBox.remove();
+            }, 5000);
+        }
+
+        // Initial setup check
+        window.onload = () => {
+             if (remotePeerId) {
+                 startButton.textContent = '1. Join Meeting';
+                 document.getElementById('status-box').classList.remove('bg-blue-100');
+                 document.getElementById('status-box').classList.add('bg-purple-100');
+                 peerStatus.textContent = `Ready to join room: ${remotePeerId}. Click "Join Meeting".`;
+             } else {
+                peerStatus.textContent = 'Click "Start Meeting" to create a new room.';
+             }
+        };
+    </script>
+
+</body>
+</html>
