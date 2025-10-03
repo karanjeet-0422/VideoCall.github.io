@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -213,6 +213,386 @@
 
         // Initial setup check
         window.onload = () => {
+             if (remotePeerId) {
+                 startButton.textContent = '1. Join Meeting';
+                 document.getElementById('status-box').classList.remove('bg-blue-100');
+                 document.getElementById('status-box').classList.add('bg-purple-100');
+                 peerStatus.textContent = `Ready to join room: ${remotePeerId}. Click "Join Meeting".`;
+             } else {
+                peerStatus.textContent = 'Click "Start Meeting" to create a new room.';
+             }
+        };
+    </script>
+
+</body>
+</html> -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Umeed Bot Auto-Join Call</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f7f9fb; }
+        .video-container {
+            position: relative;
+            background-color: #1f2937;
+            border-radius: 0.75rem;
+            overflow: hidden;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        }
+        video {
+            width: 100%;
+            min-height: 250px;
+            object-fit: cover;
+        }
+        .control-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="max-w-7xl mx-auto p-4 md:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-green-600">Umeed Bot Auto-Connect</h1>
+            <p class="text-gray-600 mt-2">Signaling Handled Automatically via PeerJS</p>
+        </header>
+
+        <div id="status-box" class="mb-6 p-4 bg-blue-100 border-l-4 border-blue-500 text-blue-800 rounded-lg shadow-md">
+            <p class="font-semibold">Status: <span id="peer-status">Initializing...</span></p>
+            <div id="link-section" class="mt-2 hidden">
+                <p class="font-medium text-sm">Share this link to start the meeting:</p>
+                <input type="text" id="meeting-link" readonly class="w-full mt-1 p-2 border border-gray-300 rounded-lg text-sm bg-white" />
+                <button onclick="copyLink()" class="mt-2 px-4 py-2 bg-blue-500 text-white text-sm font-semibold rounded-lg hover:bg-blue-600">Copy Link</button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <div class="video-container" style="display: flex;">
+                <video id="localVideo" autoplay muted playsinline></video>
+                <div class="absolute bottom-0 left-0 p-3 bg-black bg-opacity-30 w-full text-white font-semibold">Your Stream</div>
+            </div>
+            <div class="video-container">
+                <video id="remoteVideo" autoplay playsinline></video>
+                <div class="absolute bottom-0 left-0 p-3 bg-black bg-opacity-30 w-full text-white font-semibold">Remote Stream</div>
+            </div>
+        </div>
+
+        <div class="flex flex-col items-center">
+            <button id="startButton" onclick="startCallFlow()" class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-8 rounded-lg transition duration-200 shadow-xl text-lg mb-4">
+                1. Start or Join Meeting
+            </button>
+
+            <div id="call-controls" class="flex space-x-4">
+                <button id="videoToggleBtn" onclick="toggleVideo()" class="control-button bg-gray-500 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg transition duration-200" disabled>
+                    Video Off
+                </button>
+                <button id="micToggleBtn" onclick="toggleAudio()" class="control-button bg-gray-500 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg transition duration-200" disabled>
+                    Mic Off
+                </button>
+                <button id="endCallBtn" onclick="endCall()" class="control-button bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition duration-200" disabled>
+                    End Meeting
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const peerStatus = document.getElementById('peer-status');
+        const linkSection = document.getElementById('link-section');
+        const meetingLinkInput = document.getElementById('meeting-link');
+        const startButton = document.getElementById('startButton');
+        const callControls = document.getElementById('call-controls');
+        const videoToggleBtn = document.getElementById('videoToggleBtn');
+        const micToggleBtn = document.getElementById('micToggleBtn');
+        const endCallBtn = document.getElementById('endCallBtn');
+
+        let peer = null;
+        let localStream = null;
+        let currentCall = null; // Store the active call object
+        const urlParams = new URLSearchParams(window.location.search);
+        const remotePeerId = urlParams.get('room'); // Get the room ID from the URL
+
+        /**
+         * The core function to start the camera and initialize the PeerJS connection.
+         */
+        async function startCallFlow() {
+            startButton.disabled = true;
+            peerStatus.textContent = 'Awaiting media access...';
+            resetControls(true); // Disable all controls initially
+
+            try {
+                // 1. Get Local Stream (Camera/Mic)
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+                peerStatus.textContent = 'Media secured. Connecting to signaling server...';
+                
+                // Enable video/mic toggles once stream is ready
+                resetControls(false); 
+
+                // 2. Initialize PeerJS
+                if (remotePeerId) {
+                    // Scenario B: Joining a call (ID is in the URL)
+                    initializePeer(null); // Let PeerJS generate a temporary ID
+                } else {
+                    // Scenario A: Creating a new meeting (ID is not in the URL)
+                    initializePeer(generateRoomId()); // Generate a specific, memorable ID
+                }
+
+            } catch (error) {
+                peerStatus.textContent = 'ERROR: ' + error.name + '. Check HTTPS, permissions, and device status.';
+                console.error('Error starting call flow:', error);
+                startButton.disabled = false;
+                resetControls(true);
+            }
+        }
+
+        /**
+         * Initializes the PeerJS object with a given ID.
+         * @param {string | null} id The desired Peer ID, or null to let PeerJS generate one.
+         */
+        function initializePeer(id) {
+            // Using the default PeerJS server for simplicity
+            peer = new Peer(id, {
+                host: '0.peerjs.com', 
+                port: 443, 
+                secure: true 
+            });
+
+            peer.on('open', (peerId) => {
+                peerStatus.textContent = `Connected to signaling server. Your ID: ${peerId}`;
+                
+                if (!remotePeerId) {
+                    // Scenario A: New Meeting Creator
+                    displayShareLink(peerId);
+                } else {
+                    // Scenario B: User joining a meeting
+                    connectToRemotePeer(remotePeerId, localStream);
+                }
+            });
+
+            peer.on('call', (call) => {
+                // When a remote peer calls us, answer it
+                peerStatus.textContent = `Incoming call from ${call.peer}. Answering...`;
+                call.answer(localStream);
+                currentCall = call; // Store the call object
+                setupRemoteStream(call);
+            });
+
+            peer.on('error', (err) => {
+                peerStatus.textContent = `PEER ERROR: ${err.type}`;
+                console.error('PeerJS Error:', err);
+                startButton.disabled = false;
+                resetControls(true);
+            });
+            
+            peer.on('close', () => {
+                peerStatus.textContent = 'Peer connection closed.';
+                endCallCleanup();
+            });
+            
+            peer.on('disconnected', () => {
+                peerStatus.textContent = 'Disconnected from signaling server. Attempting to reconnect...';
+                // PeerJS handles reconnection attempts automatically
+            });
+        }
+
+        /**
+         * Initiates the call to the remote peer ID.
+         * @param {string} targetPeerId The ID of the peer to call.
+         * @param {MediaStream} stream The local media stream.
+         */
+        function connectToRemotePeer(targetPeerId, stream) {
+            peerStatus.textContent = `Connecting to ${targetPeerId}...`;
+            const call = peer.call(targetPeerId, stream);
+            currentCall = call; // Store the call object
+            setupRemoteStream(call);
+        }
+
+        /**
+         * Sets up the listener for the remote peer's video stream.
+         * @param {Peer.MediaConnection} call The established PeerJS media connection.
+         */
+        function setupRemoteStream(call) {
+            // Enable End Call button when a connection is made
+            endCallBtn.disabled = false;
+            
+            call.on('stream', (remoteStream) => {
+                remoteVideo.srcObject = remoteStream;
+                peerStatus.textContent = `Call established with ${call.peer}.`;
+                customAlert('Call connected successfully!');
+            });
+            
+            call.on('close', () => {
+                peerStatus.textContent = 'Call ended by remote peer.';
+                endCallCleanup();
+            });
+            
+            call.on('error', (err) => {
+                peerStatus.textContent = `CALL ERROR: ${err.type}`;
+                console.error('Call Error:', err);
+                endCallCleanup();
+            });
+        }
+        
+        /**
+         * Toggles the local video track on/off.
+         */
+        function toggleVideo() {
+            const videoTrack = localStream.getVideoTracks()[0];
+            if (videoTrack) {
+                videoTrack.enabled = !videoTrack.enabled;
+                videoToggleBtn.textContent = videoTrack.enabled ? 'Video Off' : 'Video On';
+                videoToggleBtn.classList.toggle('bg-gray-500');
+                videoToggleBtn.classList.toggle('bg-blue-500');
+                customAlert(videoTrack.enabled ? 'Video ON' : 'Video OFF');
+            }
+        }
+
+        /**
+         * Toggles the local audio track on/off.
+         */
+        function toggleAudio() {
+            const audioTrack = localStream.getAudioTracks()[0];
+            if (audioTrack) {
+                audioTrack.enabled = !audioTrack.enabled;
+                micToggleBtn.textContent = audioTrack.enabled ? 'Mic Off' : 'Mic On';
+                micToggleBtn.classList.toggle('bg-gray-500');
+                micToggleBtn.classList.toggle('bg-blue-500');
+                customAlert(audioTrack.enabled ? 'Mic ON' : 'Mic OFF');
+            }
+        }
+        
+        /**
+         * Ends the meeting by closing the call and cleaning up resources.
+         */
+        function endCall() {
+            customAlert('Ending call...');
+            if (currentCall) {
+                currentCall.close(); // Close the PeerJS media connection
+            } else {
+                 // If not connected yet, still clean up local stream
+                 endCallCleanup();
+            }
+        }
+        
+        /**
+         * Cleans up all resources after the call ends (local and remote).
+         */
+        function endCallCleanup() {
+            // Stop all local media tracks
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            
+            // Clear video elements
+            localVideo.srcObject = null;
+            remoteVideo.srcObject = null;
+            
+            // Close the PeerJS connection
+            if (peer) {
+                peer.destroy();
+                peer = null;
+            }
+            
+            currentCall = null;
+            
+            // Reset UI state
+            peerStatus.textContent = 'Meeting ended. Ready for a new call.';
+            startButton.disabled = false;
+            startButton.textContent = remotePeerId ? '1. Join Meeting' : '1. Start or Join Meeting';
+            linkSection.classList.add('hidden');
+            resetControls(true); // Disable controls
+        }
+        
+        /**
+         * Utility to reset and manage the disabled state of the control buttons.
+         * @param {boolean} disabled Whether to disable (true) or enable (false) controls.
+         */
+        function resetControls(disabled) {
+            videoToggleBtn.disabled = disabled;
+            micToggleBtn.disabled = disabled;
+            endCallBtn.disabled = disabled;
+
+            // Reset button text and colors to default (OFF state is the default)
+            videoToggleBtn.textContent = 'Video Off';
+            micToggleBtn.textContent = 'Mic Off';
+            videoToggleBtn.classList.remove('bg-blue-500');
+            videoToggleBtn.classList.add('bg-gray-500');
+            micToggleBtn.classList.remove('bg-blue-500');
+            micToggleBtn.classList.add('bg-gray-500');
+            
+            if (!disabled) {
+                 // Ensure initial visual state matches the stream state (ON by default when secured)
+                 // This ensures the button correctly shows 'Off' when media is acquired
+                 videoToggleBtn.textContent = 'Video Off';
+                 micToggleBtn.textContent = 'Mic Off';
+                 endCallBtn.disabled = true; // Only enable after connection for safety
+            }
+        }
+
+
+        /**
+         * Utility to generate a simple, recognizable room ID.
+         */
+        function generateRoomId() {
+            return 'umeed-' + Math.random().toString(36).substring(2, 6);
+        }
+
+        /**
+         * Utility to display and copy the link for the caller.
+         */
+        function displayShareLink(peerId) {
+            // Generates the link: current URL + ?room=PEER_ID
+            const link = window.location.origin + window.location.pathname + `?room=${peerId}`;
+            meetingLinkInput.value = link;
+            linkSection.classList.remove('hidden');
+            peerStatus.textContent = 'Meeting created. Share the link to invite the other user.';
+        }
+
+        function copyLink() {
+            meetingLinkInput.select();
+            document.execCommand('copy');
+            customAlert('Meeting link copied to clipboard!');
+        }
+        
+        // Simple custom alert (from previous version)
+        function customAlert(message) {
+            console.error(message);
+            const alertBox = document.createElement('div');
+            alertBox.className = 'fixed top-4 right-4 p-4 rounded-lg shadow-xl text-white font-semibold z-50 transition-transform transform duration-300';
+            
+            if (message.toLowerCase().includes('error') || message.toLowerCase().includes('failed')) {
+                alertBox.classList.add('bg-red-600');
+            } else {
+                alertBox.classList.add('bg-green-600');
+            }
+
+            alertBox.textContent = message;
+            document.body.appendChild(alertBox);
+
+            // Add a slight delay before starting the slide-out
+            setTimeout(() => {
+                alertBox.classList.add('opacity-0');
+                // Remove the element after the transition is complete
+                setTimeout(() => alertBox.remove(), 300); 
+            }, 4700);
+            
+            setTimeout(() => {
+                alertBox.classList.remove('opacity-0'); // Ensure it's visible initially
+            }, 100); 
+        }
+
+        // Initial setup check
+        window.onload = () => {
+             resetControls(true); // Ensure controls are disabled on load
              if (remotePeerId) {
                  startButton.textContent = '1. Join Meeting';
                  document.getElementById('status-box').classList.remove('bg-blue-100');
